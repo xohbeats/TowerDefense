@@ -1,0 +1,649 @@
+<!-- File: tower-defense.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Canvas Tower Defense</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #0f1220; --panel: #171a2b; --text: #e8ecff; --muted: #9aa3c7;
+      --accent: #6ee7ff; --accent2: #a78bfa; --danger: #ff6b6b; --gold: #ffd166;
+      --path: #2d3a5f; --tile: #111429; --tile2: #141a36; --grid: #22274b;
+      --green: #22c55e; --blue: #60a5fa;
+    }
+    *{box-sizing:border-box} html,body{height:100%}
+    body{
+      margin:0; background:linear-gradient(160deg,#0b0f1e,#0f1220 30%,#0b0f1e);
+      color:var(--text); font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif;
+      display:flex; align-items:center; justify-content:center; padding:16px;
+    }
+    .wrap{display:grid; grid-template-columns:auto 340px; gap:16px; width:min(1200px, 96vw)}
+    canvas{background:var(--bg); border:1px solid #20264d; border-radius:12px; box-shadow:0 10px 40px #0006}
+    .panel{
+      background:var(--panel); border:1px solid #22274b; border-radius:12px; padding:14px;
+      display:flex; flex-direction:column; gap:12px; box-shadow:0 10px 40px #0006;
+    }
+    .stats{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+    .stat{background: #12162c; border:1px solid #22274b; padding:10px; border-radius:8px}
+    .buttons{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+    button{
+      background:#141a36; color:var(--text); border:1px solid #2a3163; padding:10px 12px; border-radius:8px;
+      cursor:pointer; transition:.15s; font-weight:600;
+    }
+    button:hover{border-color:#4650a7; transform:translateY(-1px)}
+    button.primary{background:linear-gradient(180deg,#1e244f,#161c3d); border-color:#4650a7}
+    button.warn{background:linear-gradient(180deg,#3a1520,#2a0f18); border-color:#6b2030; color:#ffd2d2}
+    .toolbar{display:grid; grid-template-columns:repeat(3,1fr); gap:8px}
+    .tool{
+      display:grid; gap:6px; padding:10px; border-radius:8px; border:1px solid #2a3163; background:#13183a;
+    }
+    .tool h4{margin:0; font-size:13px}
+    .cost{color:var(--gold); font-weight:700}
+    .hint{color:var(--muted); font-size:12px}
+    .list{display:flex; flex-direction:column; gap:8px}
+    .sel{outline:2px solid var(--accent); box-shadow:0 0 0 2px #000 inset}
+    .footer{color:var(--muted); font-size:12px}
+    .toggle{display:flex; gap:8px}
+    .row{display:flex; justify-content:space-between; align-items:center}
+    .range-chip{font-size:12px; color:#cfe0ff}
+    .kbd{background:#0b0f1e; border:1px solid #2a3163; border-radius:6px; padding:2px 6px; font-size:12px}
+    @media (max-width: 1020px){ .wrap{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" width="960" height="576" aria-label="Tower Defense"></canvas>
+    <aside class="panel" id="ui">
+      <div class="row"><h2 style="margin:0">Tower Defense</h2><span class="range-chip">Grid 15×9</span></div>
+      <div class="stats">
+        <div class="stat"><div>Money</div><div id="money" style="font-weight:800;color:var(--gold)">$650</div></div>
+        <div class="stat"><div>Lives</div><div id="lives" style="font-weight:800;color:var(--green)">20</div></div>
+        <div class="stat"><div>Wave</div><div id="wave" style="font-weight:800">0</div></div>
+        <div class="stat"><div>Enemies</div><div id="remain" style="font-weight:800">0</div></div>
+      </div>
+
+      <div class="buttons">
+        <button id="start" class="primary">▶ Start Wave <span class="kbd">SPACE</span></button>
+        <button id="pause">⏸ Pause</button>
+        <button id="speed">⏩ x1</button>
+        <button id="sell" class="warn">Sell (S)</button>
+      </div>
+
+      <div class="toolbar">
+        <div class="tool sel" data-type="arrow">
+          <h4>Arrow Tower</h4>
+          <div>Cost: <span class="cost">$120</span></div>
+          <div class="hint">Single target, fast.</div>
+        </div>
+        <div class="tool" data-type="cannon">
+          <h4>Cannon Tower</h4>
+          <div>Cost: <span class="cost">$180</span></div>
+          <div class="hint">AOE splash, slow.</div>
+        </div>
+        <div class="tool" data-type="frost">
+          <h4>Frost Tower</h4>
+          <div>Cost: <span class="cost">$160</span></div>
+          <div class="hint">Slows enemies.</div>
+        </div>
+      </div>
+
+      <div class="list" id="selection"></div>
+      <div class="footer">
+        Click tiles to place towers (not on path). Upgrade or sell from selection.<br/>
+        Hotkeys: <span class="kbd">1</span>/<span class="kbd">2</span>/<span class="kbd">3</span>, <span class="kbd">S</span>, <span class="kbd">Space</span>, <span class="kbd">P</span>.
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    // ---------- Utilities ----------
+    const TAU = Math.PI * 2;
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const dist2 = (ax, ay, bx, by) => { const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; };
+    const rnd = (a,b) => a + Math.random()*(b-a);
+    const lerp = (a,b,t) => a+(b-a)*t;
+
+    // ---------- Config ----------
+    const TILE = 64;
+    const COLS = 15, ROWS = 9;
+    const WIDTH = COLS * TILE, HEIGHT = ROWS * TILE;
+
+    const COLORS = {
+      bg:'#0f1220', grid:'#1b2148', tile:'#101436', tile2:'#0e1230',
+      path:'#26335b', pathEdge:'#39487a',
+      arrow:'#6ee7ff', cannon:'#ffd166', frost:'#a78bfa',
+      hp:'#22c55e', hpBack:'#203a2e', danger:'#ff6b6b', text:'#e8ecff'
+    };
+
+    const MONEY_START = 650;
+    const LIVES_START = 20;
+
+    // Map path waypoints (grid coords). A simple S curve.
+    const PATH = [
+      [0,4],[3,4],[3,2],[6,2],[6,6],[10,6],[10,1],[14,1]
+    ];
+
+    // ---------- Core classes ----------
+    class Enemy {
+      constructor(type, wave) {
+        const scale = 1 + wave*0.08;
+        const types = {
+          normal: {hp: 80, speed: 48, reward: 12, color:'#7dd3fc'},
+          fast:   {hp: 55, speed: 78, reward: 11, color:'#93c5fd'},
+          tank:   {hp: 180, speed: 36, reward: 18, color:'#60a5fa'}
+        };
+        const t = types[type] || types.normal;
+        this.maxHp = Math.round(t.hp * scale);
+        this.hp = this.maxHp;
+        this.baseSpeed = t.speed * (1 + wave*0.01);
+        this.speed = this.baseSpeed;
+        this.reward = t.reward;
+        this.color = t.color;
+        this.r = 12;
+        this.way = 0;
+        this.x = PATH[0][0]*TILE + TILE/2 - rnd(-4,4);
+        this.y = PATH[0][1]*TILE + TILE/2 - rnd(-4,4);
+        this.done = false;
+        this.slowTimer = 0;
+        this.slowFactor = 1;
+      }
+      applySlow(factor, time){
+        // Why: stacking capped to avoid permanent freeze.
+        this.slowFactor = Math.min(this.slowFactor, factor);
+        this.slowTimer = Math.max(this.slowTimer, time);
+      }
+      update(dt, game){
+        if(this.slowTimer > 0){
+          this.slowTimer -= dt;
+          if(this.slowTimer <= 0){ this.slowFactor = 1; }
+        }
+        const target = PATH[Math.min(this.way+1, PATH.length-1)];
+        const cx = target[0]*TILE + TILE/2;
+        const cy = target[1]*TILE + TILE/2;
+        const dx = cx - this.x, dy = cy - this.y;
+        const d = Math.hypot(dx, dy) || 1;
+        const step = this.baseSpeed * this.slowFactor * dt;
+        if(d <= step){
+          this.x = cx; this.y = cy; this.way++;
+          if(this.way >= PATH.length-1){
+            this.done = true;
+            game.lives = Math.max(0, game.lives-1);
+          }
+        } else {
+          this.x += dx / d * step;
+          this.y += dy / d * step;
+        }
+      }
+      damage(amount){ this.hp -= amount; }
+      draw(g){
+        g.save();
+        g.translate(this.x, this.y);
+        g.fillStyle = this.color;
+        g.beginPath(); g.arc(0,0,this.r,0,TAU); g.fill();
+        // HP bar
+        const w = 28, h = 4;
+        g.fillStyle = '#0008'; g.fillRect(-w/2-1, -this.r-10-1, w+2, h+2);
+        g.fillStyle = COLORS.hpBack; g.fillRect(-w/2, -this.r-10, w, h);
+        g.fillStyle = COLORS.hp; g.fillRect(-w/2, -this.r-10, w*(this.hp/this.maxHp), h);
+        g.restore();
+      }
+    }
+
+    class Projectile {
+      constructor(x,y, vx,vy, dmg, opts={}){
+        this.x=x; this.y=y; this.vx=vx; this.vy=vy; this.dmg=dmg;
+        this.r=opts.r||4; this.color=opts.color||'#fff';
+        this.aoe=opts.aoe||0; this.slow=opts.slow||0; this.slowTime=opts.slowTime||0;
+        this.life=opts.life||2.5; this.pierce=opts.pierce||1;
+      }
+      update(dt){ this.x+=this.vx*dt; this.y+=this.vy*dt; this.life-=dt; }
+      draw(g){
+        g.save(); g.translate(this.x,this.y);
+        g.fillStyle=this.color; g.beginPath(); g.arc(0,0,this.r,0,TAU); g.fill();
+        g.restore();
+      }
+    }
+
+    class Tower {
+      constructor(x,y){ this.x=x; this.y=y; this.cool=0; this.level=1; this.selected=false; }
+      inRange(e){ return dist2(this.x,this.y,e.x,e.y) <= this.range*this.range; }
+      upgrade(game){
+        const cost = Math.round(this.cost * 0.8 * this.level);
+        if(game.money >= cost && this.level < 4){ game.money -= cost; this.level++; this.onUpgrade(); }
+      }
+      sell(game){
+        const refund = Math.round(this.cost*0.6 + (this.level-1)*this.cost*0.3);
+        game.money += refund;
+        return refund;
+      }
+      onUpgrade(){}
+    }
+
+    class ArrowTower extends Tower{
+      constructor(x,y){
+        super(x,y);
+        this.type='arrow'; this.cost=120; this.range=140; this.fire=4; this.damage=22; this.color=COLORS.arrow;
+      }
+      onUpgrade(){ this.range+=10; this.fire+=0.6; this.damage+=8; }
+      update(dt, game){
+        this.cool -= dt;
+        let target=null, best=1e9;
+        for(const e of game.enemies){
+          if(!this.inRange(e)) continue;
+          const score = e.way*1000 + dist2(e.x,e.y, PATH[PATH.length-1][0]*TILE, PATH[PATH.length-1][1]*TILE);
+          if(score < best){ best=score; target=e; }
+        }
+        if(target && this.cool<=0){
+          const dx=target.x-this.x, dy=target.y-this.y, d=Math.hypot(dx,dy)||1;
+          const speed=360;
+          const p = new Projectile(this.x,this.y, dx/d*speed, dy/d*speed, this.damage, {color: this.color, r:3});
+          game.projectiles.push(p);
+          this.cool = 1/this.fire;
+        }
+      }
+      draw(g){
+        g.save(); g.translate(this.x,this.y);
+        g.fillStyle=this.color; g.beginPath();
+        g.moveTo(-10,12); g.lineTo(10,12); g.lineTo(0,-12); g.closePath(); g.fill();
+        g.restore();
+      }
+    }
+
+    class CannonTower extends Tower{
+      constructor(x,y){
+        super(x,y);
+        this.type='cannon'; this.cost=180; this.range=160; this.fire=1.1; this.damage=48; this.color=COLORS.cannon; this.splash=48;
+      }
+      onUpgrade(){ this.damage+=16; this.splash+=6; this.fire+=0.2; this.range+=8; }
+      update(dt, game){
+        this.cool -= dt;
+        const target = game.enemies.find(e => this.inRange(e));
+        if(target && this.cool<=0){
+          const dx=target.x-this.x, dy=target.y-this.y, d=Math.hypot(dx,dy)||1;
+          const speed=260;
+          const p = new Projectile(this.x,this.y, dx/d*speed, dy/d*speed, this.damage, {color:this.color, r:5, aoe:this.splash});
+          game.projectiles.push(p);
+          this.cool = 1/this.fire;
+        }
+      }
+      draw(g){
+        g.save(); g.translate(this.x,this.y);
+        g.fillStyle=this.color; g.beginPath(); g.arc(0,0,12,0,TAU); g.fill();
+        g.fillStyle='#0006'; g.fillRect(-8,-6,16,12);
+        g.restore();
+      }
+    }
+
+    class FrostTower extends Tower{
+      constructor(x,y){
+        super(x,y);
+        this.type='frost'; this.cost=160; this.range=130; this.fire=1.6; this.damage=14; this.color=COLORS.frost;
+        this.slowFactor=0.5; this.slowTime=1.2;
+      }
+      onUpgrade(){ this.damage+=6; this.range+=10; this.slowTime+=0.25; this.fire+=0.2; }
+      update(dt, game){
+        this.cool -= dt;
+        const target = game.enemies.find(e => this.inRange(e));
+        if(target && this.cool<=0){
+          const dx=target.x-this.x, dy=target.y-this.y, d=Math.hypot(dx,dy)||1;
+          const speed=320;
+          const p = new Projectile(
+            this.x,this.y, dx/d*speed, dy/d*speed, this.damage,
+            {color:this.color, r:4, slow:this.slowFactor, slowTime:this.slowTime}
+          );
+          game.projectiles.push(p);
+          this.cool = 1/this.fire;
+        }
+      }
+      draw(g){
+        g.save(); g.translate(this.x,this.y);
+        g.fillStyle=this.color; g.beginPath(); g.moveTo(0,-12);
+        for(let i=1;i<6;i++){ const a=i*TAU/6; g.lineTo(Math.cos(a)*12, Math.sin(a)*12); }
+        g.closePath(); g.fill();
+        g.restore();
+      }
+    }
+
+    class WaveManager{
+      constructor(game){ this.game=game; this.timer=0; this.queue=[]; this.active=false; this.total=0; }
+      start(){
+        if(this.active) return;
+        const w = ++this.game.wave;
+        this.queue = this.buildWave(w);
+        this.total = this.queue.reduce((a,b)=>a+b.count,0);
+        this.active=true; this.timer=0;
+      }
+      buildWave(w){
+        // Why: deterministic composition scales variety with wave number.
+        const packs = [];
+        const add = (type,count,rate=0.8)=>packs.push({type,count,rate});
+        add('normal', 8 + Math.floor(w*0.8), 0.7);
+        if(w>=2) add('fast', 4 + Math.floor(w*0.6), 0.5);
+        if(w>=4) add('tank', 2 + Math.floor(w*0.4), 1.0);
+        return packs;
+      }
+      update(dt){
+        if(!this.active) return;
+        this.timer -= dt;
+        if(this.timer<=0 && this.queue.length){
+          const cur = this.queue[0];
+          this.game.spawnEnemy(cur.type);
+          cur.count--;
+          this.timer = cur.rate;
+          if(cur.count<=0) this.queue.shift();
+        }
+        if(this.active && !this.queue.length && this.game.enemies.length===0){
+          this.active=false;
+          this.game.money += 50 + Math.floor(this.game.wave*10);
+        }
+      }
+    }
+
+    // ---------- Game ----------
+    class Game {
+      constructor(canvas){
+        this.g = canvas.getContext('2d');
+        canvas.width = WIDTH; canvas.height = HEIGHT;
+
+        this.money = MONEY_START;
+        this.lives = LIVES_START;
+        this.wave = 0;
+        this.speed = 1;
+        this.paused = false;
+        this.sellMode = false;
+
+        this.enemies = [];
+        this.towers = [];
+        this.projectiles = [];
+        this.effects = [];
+
+        this.grid = this.buildGrid();
+        this.hover = {c:-1,r:-1};
+        this.selected = null;
+        this.selectedType = 'arrow';
+
+        this.waveMgr = new WaveManager(this);
+
+        this.bindUI();
+        this.last = performance.now();
+        requestAnimationFrame(this.loop.bind(this));
+      }
+
+      buildGrid(){
+        // 0 empty, 1 path
+        const grid = Array.from({length:ROWS},()=>Array(COLS).fill(0));
+        for(let i=0;i<PATH.length-1;i++){
+          const [ax,ay] = PATH[i], [bx,by] = PATH[i+1];
+          if(ax===bx){
+            const sy = Math.sign(by-ay);
+            for(let y=ay;y!==by+sy;y+=sy) grid[y][ax]=1;
+          } else {
+            const sx = Math.sign(bx-ax);
+            for(let x=ax;x!==bx+sx;x+=sx) grid[ay][x]=1;
+          }
+        }
+        return grid;
+      }
+
+      bindUI(){
+        const $ = (id)=>document.getElementById(id);
+        this.$money=$('money'); this.$lives=$('lives'); this.$wave=$('wave'); this.$remain=$('remain');
+
+        const tools = document.querySelectorAll('.tool');
+        tools.forEach(el=>{
+          el.addEventListener('click',()=>{
+            tools.forEach(e=>e.classList.remove('sel'));
+            el.classList.add('sel');
+            this.selectedType = el.dataset.type;
+            this.sellMode = false;
+            document.getElementById('sell').classList.remove('sel');
+          });
+        });
+
+        $('start').onclick = ()=> this.waveMgr.start();
+        $('pause').onclick = ()=> this.paused = !this.paused;
+        $('speed').onclick = ()=>{
+          this.speed = this.speed===1 ? 2 : this.speed===2 ? 3 : 1;
+          $('speed').textContent = `⏩ x${this.speed}`;
+        };
+        $('sell').onclick = ()=>{
+          this.sellMode = !this.sellMode;
+          $('sell').classList.toggle('sel', this.sellMode);
+        };
+
+        const selList = document.getElementById('selection');
+        const renderSelection = ()=>{
+          selList.innerHTML = '';
+          if(!this.selected){ selList.innerHTML = '<div class="hint">No tower selected.</div>'; return; }
+          const t = this.selected;
+          const box = document.createElement('div');
+          box.className='tool';
+          box.innerHTML = `
+            <h4>${t.type.toUpperCase()} Tower (Lv.${t.level})</h4>
+            <div>Range: ${Math.round(t.range)} | Fire: ${t.fire.toFixed(2)}/s | Dmg: ${t.damage}</div>
+            <div class="row">
+              <button id="upg" class="primary">⬆ Upgrade ($${Math.round(t.cost*0.8*t.level)})</button>
+              <button id="rm" class="warn">💰 Sell</button>
+            </div>
+          `;
+          selList.appendChild(box);
+          document.getElementById('upg').onclick = ()=>{ t.upgrade(this); renderSelection(); };
+          document.getElementById('rm').onclick = ()=>{
+            const refund = t.sell(this);
+            this.towers = this.towers.filter(x=>x!==t);
+            this.selected = null; renderSelection();
+            this.flash(`Sold +$${refund}`, COLORS.gold);
+          };
+        };
+        this.renderSelection = renderSelection;
+
+        const rectOf = ()=>document.getElementById('game').getBoundingClientRect();
+        const canvas = document.getElementById('game');
+
+        canvas.addEventListener('mousemove', (e)=>{
+          const r = rectOf();
+          const x = e.clientX - r.left, y = e.clientY - r.top;
+          const c = Math.floor(x/TILE), rr = Math.floor(y/TILE);
+          this.hover = {c, r: rr};
+        });
+
+        canvas.addEventListener('click', ()=>{
+          const {c,r} = this.hover;
+          if(c<0||c>=COLS||r<0||r>=ROWS) return;
+          const cx = c*TILE + TILE/2, cy = r*TILE + TILE/2;
+
+          const underTower = this.towers.find(t => Math.floor(t.x/TILE)===c && Math.floor(t.y/TILE)===r);
+          if(underTower){
+            this.towers.forEach(t=>t.selected=false);
+            underTower.selected = true; this.selected = underTower; this.renderSelection();
+            return;
+          }
+
+          if(this.sellMode){
+            // No-op if clicked empty tile while in sell mode.
+            return;
+          }
+
+          if(this.grid[r][c]===1) return; // on path
+          if(this.towers.some(t => dist2(t.x,t.y,cx,cy) < 1)) return;
+
+          const T = {arrow: ArrowTower, cannon: CannonTower, frost: FrostTower}[this.selectedType];
+          const temp = new T(cx, cy);
+          if(this.money >= temp.cost){
+            this.money -= temp.cost;
+            this.towers.push(temp);
+            this.towers.forEach(t=>t.selected=false);
+            temp.selected=true; this.selected=temp; this.renderSelection();
+          } else {
+            this.flash('Not enough money', COLORS.danger);
+          }
+        });
+
+        window.addEventListener('keydown', (e)=>{
+          if(e.code==='Space'){ e.preventDefault(); this.waveMgr.start(); }
+          if(e.key==='p' || e.key==='P'){ this.paused=!this.paused; }
+          if(e.key==='1'){ document.querySelector('[data-type="arrow"]').click(); }
+          if(e.key==='2'){ document.querySelector('[data-type="cannon"]').click(); }
+          if(e.key==='3'){ document.querySelector('[data-type="frost"]').click(); }
+          if(e.key==='s' || e.key==='S'){ document.getElementById('sell').click(); }
+        });
+      }
+
+      spawnEnemy(type){ this.enemies.push(new Enemy(type, this.wave)); }
+
+      loop(now){
+        const dt = Math.min(0.033, (now - this.last) / 1000) * (this.paused?0:this.speed);
+        this.last = now;
+
+        this.update(dt);
+        this.render();
+        requestAnimationFrame(this.loop.bind(this));
+      }
+
+      update(dt){
+        // Enemies
+        for(const e of this.enemies) e.update(dt, this);
+        // Towers
+        for(const t of this.towers) t.update(dt, this);
+        // Projectiles
+        for(const p of this.projectiles) p.update(dt);
+
+        // Collisions
+        for(const p of this.projectiles){
+          if(p.life<=0) continue;
+          for(const e of this.enemies){
+            if(e.hp<=0 || e.done) continue;
+            const r = p.r + e.r;
+            if(dist2(p.x,p.y,e.x,e.y) <= r*r){
+              e.damage(p.dmg);
+              if(p.slow>0) e.applySlow(p.slow, p.slowTime);
+              if(p.aoe>0){
+                for(const ee of this.enemies){
+                  if(ee===e) continue;
+                  if(dist2(p.x,p.y,ee.x,ee.y) <= (p.aoe*p.aoe)) ee.damage(Math.round(p.dmg*0.7));
+                }
+              }
+              p.pierce--;
+              p.life = Math.max(p.life, 0.01);
+              if(p.pierce<=0){ p.life=0; break; }
+            }
+          }
+        }
+
+        // Cleanups
+        const before = this.enemies.length;
+        this.enemies = this.enemies.filter(e=>{
+          if(e.hp<=0){
+            this.money += e.reward;
+            this.effects.push({x:e.x,y:e.y,t:0,txt:`+$${e.reward}`});
+            return false;
+          }
+          return !e.done;
+        });
+        const leaked = before - this.enemies.length;
+        if(this.lives<=0) this.gameOver();
+        this.projectiles = this.projectiles.filter(p => p.life>0);
+        this.effects = this.effects.filter(e => (e.t+=dt) < 0.8);
+        this.waveMgr.update(dt);
+        this.syncUI();
+      }
+
+      flash(msg, color='#fff'){ this.effects.push({x:WIDTH-140,y:40,t:0,txt:msg,color}); }
+
+      syncUI(){
+        this.$money.textContent = `$${this.money}`;
+        this.$lives.textContent = this.lives;
+        this.$wave.textContent = this.wave;
+        const remaining = this.waveMgr.queue.reduce((a,b)=>a+b.count,0) + this.enemies.length;
+        this.$remain.textContent = remaining;
+      }
+
+      gameOver(){
+        this.paused=true;
+        this.flash('Game Over', COLORS.danger);
+      }
+
+      drawGrid(g){
+        for(let r=0;r<ROWS;r++){
+          for(let c=0;c<COLS;c++){
+            const x=c*TILE, y=r*TILE;
+            const isPath = this.grid[r][c]===1;
+            g.fillStyle = isPath ? COLORS.path : ((r+c)%2? COLORS.tile: COLORS.tile2);
+            g.fillRect(x,y,TILE,TILE);
+            if(isPath){
+              g.strokeStyle = COLORS.pathEdge; g.lineWidth=2;
+              g.strokeRect(x+1,y+1,TILE-2,TILE-2);
+            } else {
+              g.strokeStyle = '#0002'; g.strokeRect(x,y,TILE,TILE);
+            }
+          }
+        }
+        // Waypoints dots (subtle)
+        g.fillStyle='#ffffff18';
+        for(const [cx,cy] of PATH){
+          g.beginPath(); g.arc(cx*TILE+TILE/2, cy*TILE+TILE/2, 3, 0, TAU); g.fill();
+        }
+      }
+
+      render(){
+        const g = this.g;
+        g.clearRect(0,0,WIDTH,HEIGHT);
+        this.drawGrid(g);
+
+        // Range preview
+        if(!this.sellMode && this.hover.c>=0 && this.hover.r>=0){
+          const {c,r}=this.hover;
+          if(this.grid[r]?.[c]===0){
+            const cx=c*TILE+TILE/2, cy=r*TILE+TILE/2;
+            const previewColor = {arrow:COLORS.arrow,cannon:COLORS.cannon,frost:COLORS.frost}[this.selectedType];
+            const tempRange = {arrow:140, cannon:160, frost:130}[this.selectedType];
+            g.save(); g.globalAlpha=0.15; g.fillStyle=previewColor; g.beginPath(); g.arc(cx,cy,tempRange,0,TAU); g.fill(); g.restore();
+            g.strokeStyle='#fff3'; g.strokeRect(c*TILE+0.5, r*TILE+0.5, TILE-1, TILE-1);
+          }
+        }
+
+        // Towers
+        for(const t of this.towers){
+          t.draw(g);
+          if(t.selected){
+            g.save(); g.globalAlpha=0.15; g.fillStyle='#fff'; g.beginPath(); g.arc(t.x,t.y,t.range,0,TAU); g.fill(); g.restore();
+            g.strokeStyle='#fff8'; g.beginPath(); g.arc(t.x,t.y,t.range,0,TAU); g.stroke();
+          }
+        }
+
+        // Projectiles & Enemies
+        for(const p of this.projectiles) p.draw(g);
+        for(const e of this.enemies) e.draw(g);
+
+        // Effects
+        for(const fx of this.effects){
+          const a = 1 - fx.t/0.8;
+          const y = fx.y - fx.t*30;
+          this.drawText(fx.txt, fx.x, y, fx.color||'#fff', a);
+        }
+
+        // Cursor sell marker
+        if(this.sellMode && this.hover.c>=0){
+          const {c,r}=this.hover; const x=c*TILE, y=r*TILE;
+          g.strokeStyle = COLORS.danger; g.lineWidth=3;
+          g.strokeRect(x+4,y+4,TILE-8,TILE-8);
+        }
+      }
+
+      drawText(txt, x,y, color='#fff', alpha=1){
+        const g=this.g; g.save(); g.globalAlpha=alpha; g.fillStyle=color;
+        g.font='700 16px Inter, system-ui, sans-serif';
+        g.textAlign='center'; g.fillText(txt,x,y); g.restore();
+      }
+    }
+
+    // ---------- Boot ----------
+    const canvas = document.getElementById('game');
+    const game = new Game(canvas);
+
+    // Helper: show initial tips
+    game.flash('Place towers then Start Wave', COLORS.accent2 || '#a78bfa');
+  </script>
+</body>
+</html>
